@@ -1,7 +1,7 @@
 # spark-agent
 minimal golang CLI harness for directly connecting to agents hosted on spark dgx
 
-```
+```tree
 spark-agent/
 ├── cmd/spark-agent/main.go   # Flag parsing, signal context, REPL loop
 └── internal/
