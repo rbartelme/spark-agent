@@ -27,6 +27,7 @@ func main() {
 	baseURL := flag.String("url", "http://localhost:8000/v1", "OpenAI-compatible vLLM base URL")
 	rootDir := flag.String("root", ".", "Repository root directory to sandbox file operations")
 	timeout := flag.Duration("timeout", 5*time.Minute, "Per-turn timeout")
+	maxContext := flag.Int("max-context", 0, "Override context window size in tokens (0 = auto-detect from vLLM)")
 	flag.Parse()
 
 	registry, err := tools.NewRegistry(*rootDir, os.Stdin)
@@ -38,14 +39,21 @@ func main() {
 
 	client := llm.NewClient(*baseURL, *timeout)
 	bot := agent.New(client, registry, defaultSystemPrompt)
+	if *maxContext > 0 {
+		bot.SetMaxContext(*maxContext)
+	}
 
 	checkCtx, cancelCheck := context.WithTimeout(context.Background(), 5*time.Second)
-	initialModel, err := client.ActiveModel(checkCtx)
+	info, err := client.ActiveModelInfo(checkCtx)
 	cancelCheck()
 	if err != nil {
 		fmt.Printf("Warning: could not reach %s (%v)\n", *baseURL, err)
 	} else {
-		fmt.Printf("Connected to %s | Active model: %s | Sandbox: %s\n", *baseURL, initialModel, *rootDir)
+		ctxLimit := info.MaxModelLen
+		if *maxContext > 0 {
+			ctxLimit = *maxContext
+		}
+		fmt.Printf("Connected to %s | Active model: %s | Context: %d tokens | Sandbox: %s\n", *baseURL, info.ID, ctxLimit, *rootDir)
 	}
 	fmt.Println("Type a prompt, /exit to quit, or press Ctrl+C during a turn to cancel.")
 
@@ -72,7 +80,14 @@ func main() {
 		turnCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
 		turnCtx, cancelTimeout := context.WithTimeout(turnCtx, *timeout)
 
-		answer, err := bot.RunTurn(turnCtx, prompt)
+		firstChunk := true
+		_, err = bot.RunTurn(turnCtx, prompt, func(delta string) {
+			if firstChunk {
+				fmt.Println()
+				firstChunk = false
+			}
+			fmt.Print(delta)
+		})
 		cancelTimeout()
 		stopSignals()
 
@@ -83,10 +98,6 @@ func main() {
 			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			continue
-		}
-
-		if answer != "" {
-			fmt.Printf("\n%s\n", answer)
 		}
 	}
 }
