@@ -113,7 +113,7 @@ func autocompleteSlashCommands(line string, pos int, key rune) (string, int, boo
 	if key != '\t' || pos != len(line) {
 		return "", 0, false
 	}
-	for _, cmd := range []string{"/exit", "/quit"} {
+	for _, cmd := range []string{"/exit", "/quit", "/model", "/model up", "/model down", "/model status", "/model list"} {
 		if strings.HasPrefix(cmd, line) && line != "" {
 			return cmd, len(cmd), true
 		}

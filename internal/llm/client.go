@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -77,7 +78,10 @@ type Usage struct {
 
 // Client communicates with OpenAI compatible vLLM endpoint over HTTP.
 type Client struct {
+	mu         sync.RWMutex
 	baseURL    string
+	modelID    string
+	maxModelLen int
 	httpClient *http.Client
 }
 
@@ -91,6 +95,44 @@ func NewClient(baseURL string, timeout time.Duration) *Client {
 	}
 }
 
+// SetBaseURL updates the client's active base URL.
+func (c *Client) SetBaseURL(baseURL string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.baseURL = strings.TrimRight(baseURL, "/")
+	c.modelID = ""
+	c.maxModelLen = 0
+}
+
+// SetModelInfo updates the cached model ID and max model length.
+func (c *Client) SetModelInfo(modelID string, maxModelLen int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.modelID = modelID
+	c.maxModelLen = maxModelLen
+}
+
+// BaseURL returns the current base URL.
+func (c *Client) BaseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL
+}
+
+// ModelID returns the cached model ID.
+func (c *Client) ModelID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.modelID
+}
+
+// MaxModelLen returns the cached max model length.
+func (c *Client) MaxModelLen() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.maxModelLen
+}
+
 // ActiveModel queries vLLM /v1/models to discover the currently active model ID on DGX Spark.
 func (c *Client) ActiveModel(ctx context.Context) (string, error) {
 	info, err := c.ActiveModelInfo(ctx)
@@ -102,7 +144,7 @@ func (c *Client) ActiveModel(ctx context.Context) (string, error) {
 
 // ActiveModelInfo queries vLLM /v1/models for both the active model ID and max_model_len.
 func (c *Client) ActiveModelInfo(ctx context.Context) (ModelInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL()+"/models", nil)
 	if err != nil {
 		return ModelInfo{}, fmt.Errorf("Model request failed: %w", err)
 	}
@@ -146,7 +188,7 @@ func (c *Client) Chat(ctx context.Context, chatReq ChatRequest) (Message, error)
 		return Message{}, fmt.Errorf("Failed to encode chat request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(encoded))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL()+"/chat/completions", bytes.NewReader(encoded))
 	if err != nil {
 		return Message{}, fmt.Errorf("Failed to create chat request: %w", err)
 	}
@@ -192,7 +234,7 @@ func (c *Client) ChatStream(
 		return Message{}, Usage{}, fmt.Errorf("Failed to encode chat request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(encoded))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL()+"/chat/completions", bytes.NewReader(encoded))
 	if err != nil {
 		return Message{}, Usage{}, fmt.Errorf("Failed to create chat request: %w", err)
 	}

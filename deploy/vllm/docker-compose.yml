@@ -1,0 +1,133 @@
+x-vllm-base: &vllm-base
+  image: nvcr.io/nvidia/vllm:26.10-py3
+  ipc: host
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  volumes:
+    - ~/models:/models:ro
+    - ~/.cache/vllm:/root/.cache/vllm
+    - ~/.cache/triton:/root/.cache/triton
+  environment:
+    - VLLM_NO_USAGE_STATS=1
+    - HF_HUB_OFFLINE=1
+    - VLLM_SERVER_DEV_MODE=1
+  restart: unless-stopped
+
+services:
+  sidecar-7b:
+    <<: *vllm-base
+    container_name: vllm-sidecar-7b
+    ports:
+      - "8001:8001"
+    command:
+      - vllm
+      - serve
+      - /models/Qwen/Qwen2.5-Coder-7B-Instruct
+      - --served-model-name
+      - Qwen/Qwen2.5-Coder-7B-Instruct
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+      - --gpu-memory-utilization
+      - "0.14"
+      - --max-model-len
+      - "16384"
+      - --enable-prefix-caching
+      - --enable-sleep-mode
+
+  gemma4:
+    <<: *vllm-base
+    container_name: vllm-gemma4
+    ports:
+      - "8002:8000"
+    command:
+      - vllm
+      - serve
+      - /models/google/gemma-4-26B-A4B
+      - --served-model-name
+      - google/gemma-4-26B-A4B
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - "0.75"
+      - --max-model-len
+      - "32768"
+      - --kv-cache-dtype
+      - fp8
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - gemma4
+      - --reasoning-parser
+      - gemma4
+      - --enable-prefix-caching
+      - --enable-sleep-mode
+      - --compilation-config
+      - '{"cudagraph_capture_sizes": [1, 2, 4, 8]}'
+
+  qwen3-coder:
+    <<: *vllm-base
+    container_name: vllm-qwen3-coder
+    ports:
+      - "8003:8000"
+    command:
+      - vllm
+      - serve
+      - /models/Qwen/Qwen3-Coder-Next-FP8
+      - --served-model-name
+      - Qwen/Qwen3-Coder-Next-FP8
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --max-model-len
+      - "32768"
+      - --kv-cache-dtype
+      - fp8
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_xml
+      - --enable-prefix-caching
+      - --enable-sleep-mode
+      - --compilation-config
+      - '{"cudagraph_capture_sizes": [1, 2, 4, 8]}'
+
+  qwen36-35b:
+    <<: *vllm-base
+    container_name: vllm-qwen36-35b
+    ports:
+      - "8004:8000"
+    command:
+      - vllm
+      - serve
+      - /models/Qwen/Qwen3.6-35B-A3B
+      - --served-model-name
+      - Qwen/Qwen3.6-35B-A3B
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - "0.75"
+      - --max-model-len
+      - "32768"
+      - --kv-cache-dtype
+      - fp8
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_xml
+      - --reasoning-parser
+      - qwen3
+      - --enable-prefix-caching
+      - --enable-sleep-mode
+      - --compilation-config
+      - '{"cudagraph_capture_sizes": [1, 2, 4, 8]}'

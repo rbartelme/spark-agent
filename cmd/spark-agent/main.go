@@ -15,6 +15,7 @@ import (
 	"github.com/rbartelme/spark-agent/internal/cli"
 	"github.com/rbartelme/spark-agent/internal/llm"
 	"github.com/rbartelme/spark-agent/internal/tools"
+	"github.com/rbartelme/spark-agent/internal/vllm"
 )
 
 const defaultSystemPrompt = `You are a concise coding agent editing a local repository in place.
@@ -25,6 +26,8 @@ No unicode characters or emojis in your responses. Use only ASCII characters.`
 
 func main() {
 	baseURL := flag.String("url", "http://localhost:8000/v1", "OpenAI-compatible vLLM base URL")
+	model := flag.String("model", "", "Model name or alias from the zoo (e.g. sidecar, qwen3-coder, gemma4)")
+	composeFile := flag.String("compose", "", "Path to docker-compose.yml for the model zoo")
 	rootDir := flag.String("root", ".", "Repository root directory to sandbox file operations")
 	timeout := flag.Duration("timeout", 5*time.Minute, "Per-turn timeout")
 	maxContext := flag.Int("max-context", 0, "Override context window size in tokens (0 = auto-detect from vLLM)")
@@ -37,7 +40,23 @@ func main() {
 	}
 	defer registry.Close()
 
-	client := llm.NewClient(*baseURL, *timeout)
+	var client *llm.Client
+	var mgr *vllm.Manager
+
+	if *model != "" {
+		mgr = vllm.NewManager(*composeFile)
+		baseURLStr, modelID, err := mgr.EnsureReady(context.Background(), *model)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to ensure model %s is ready: %v\n", *model, err)
+			os.Exit(1)
+		}
+		client = llm.NewClient(baseURLStr, *timeout)
+		client.SetModelInfo(modelID, 0)
+		fmt.Printf("Using model zoo model: %s -> %s\n", *model, baseURLStr)
+	} else {
+		client = llm.NewClient(*baseURL, *timeout)
+	}
+
 	bot := agent.New(client, registry, defaultSystemPrompt)
 	if *maxContext > 0 {
 		bot.SetMaxContext(*maxContext)
@@ -47,15 +66,15 @@ func main() {
 	info, err := client.ActiveModelInfo(checkCtx)
 	cancelCheck()
 	if err != nil {
-		fmt.Printf("Warning: could not reach %s (%v)\n", *baseURL, err)
+		fmt.Printf("Warning: could not reach %s (%v)\n", client.BaseURL(), err)
 	} else {
 		ctxLimit := info.MaxModelLen
 		if *maxContext > 0 {
 			ctxLimit = *maxContext
 		}
-		fmt.Printf("Connected to %s | Active model: %s | Context: %d tokens | Sandbox: %s\n", *baseURL, info.ID, ctxLimit, *rootDir)
+		fmt.Printf("Connected to %s | Active model: %s | Context: %d tokens | Sandbox: %s\n", client.BaseURL(), info.ID, ctxLimit, *rootDir)
 	}
-	fmt.Println("Type a prompt, /exit to quit, or press Ctrl+C during a turn to cancel.")
+	fmt.Println("Type a prompt, /exit to quit, /model <name> to switch, or press Ctrl+C during a turn to cancel.")
 
 	promptReader := cli.NewPromptReader()
 
@@ -73,6 +92,64 @@ func main() {
 		if prompt == "" {
 			continue
 		}
+
+		// Handle /model subcommands
+		if strings.HasPrefix(prompt, "/model") {
+			if mgr == nil {
+				fmt.Println("Model zoo not initialized. Start with -model flag to enable model switching.")
+				continue
+			}
+			args := strings.TrimSpace(strings.TrimPrefix(prompt, "/model"))
+			args = strings.TrimSpace(args)
+			switch args {
+			case "up", "":
+				// Default: ensure the current model is ready
+				if *model != "" {
+					baseURLStr, modelID, err := mgr.EnsureReady(context.Background(), *model)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Failed to ensure model %s is ready: %v\n", *model, err)
+						continue
+					}
+					client.SetBaseURL(baseURLStr)
+					client.SetModelInfo(modelID, 0)
+					fmt.Printf("Model %s is ready at %s\n", *model, baseURLStr)
+				} else {
+					fmt.Println("No model specified. Use /model <name> to switch.")
+				}
+			case "down":
+				if err := mgr.DownAll(); err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to stop all models: %v\n", err)
+				} else {
+					fmt.Println("All models stopped.")
+				}
+			case "status":
+				statuses := mgr.Status()
+				fmt.Printf("%-15s %-8s %-20s\n", "SERVICE", "PORT", "STATE")
+				fmt.Printf("%-15s %-8s %-20s\n", "-------", "----", "-----")
+				for _, s := range statuses {
+					fmt.Printf("%-15s %-8d %-20s\n", s.Service, s.Port, s.State)
+				}
+			case "list":
+				models := mgr.AvailableModels()
+				fmt.Println("Available models:")
+				for _, m := range models {
+					fmt.Printf("  %s\n", m)
+				}
+			default:
+				// Treat as a model name to switch to
+				baseURLStr, modelID, err := mgr.EnsureReady(context.Background(), args)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to ensure model %s is ready: %v\n", args, err)
+					continue
+				}
+				client.SetBaseURL(baseURLStr)
+				client.SetModelInfo(modelID, 0)
+				*model = args
+				fmt.Printf("Switched to model %s at %s\n", args, baseURLStr)
+			}
+			continue
+		}
+
 		if prompt == "/exit" || prompt == "/quit" {
 			break
 		}
