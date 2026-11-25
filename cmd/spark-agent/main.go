@@ -33,6 +33,40 @@ func main() {
 	maxContext := flag.Int("max-context", 0, "Override context window size in tokens (0 = auto-detect from vLLM)")
 	flag.Parse()
 
+	// Handle "zoo" subcommands from positional args before anything else
+	args := flag.Args()
+	if len(args) > 0 && args[0] == "zoo" {
+		mgr := vllm.NewManager(*composeFile)
+		if len(args) >= 2 {
+			switch args[1] {
+			case "up":
+				// Sleep all other models and ensure the zoo is ready
+				mgr.SleepAll()
+				fmt.Println("Model zoo started.")
+			case "down":
+				if err := mgr.DownAll(); err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to stop all models: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println("All models stopped.")
+			case "status":
+				statuses := mgr.Status()
+				fmt.Printf("%-15s %-8s %-20s\n", "SERVICE", "PORT", "STATE")
+				fmt.Printf("%-15s %-8s %-20s\n", "-------", "----", "-----")
+				for _, s := range statuses {
+					fmt.Printf("%-15s %-8d %-20s\n", s.Service, s.Port, s.State)
+				}
+			default:
+				fmt.Fprintf(os.Stderr, "Unknown zoo command: %s\nUsage: spark-agent zoo [up|down|status]\n", args[1])
+				os.Exit(1)
+			}
+			os.Exit(0)
+		} else {
+			fmt.Fprintf(os.Stderr, "Usage: spark-agent zoo [up|down|status]\n")
+			os.Exit(1)
+		}
+	}
+
 	registry, err := tools.NewRegistry(*rootDir, os.Stdin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize tool registry: %v\n", err)
@@ -41,10 +75,9 @@ func main() {
 	defer registry.Close()
 
 	var client *llm.Client
-	var mgr *vllm.Manager
+	mgr := vllm.NewManager(*composeFile)
 
 	if *model != "" {
-		mgr = vllm.NewManager(*composeFile)
 		baseURLStr, modelID, err := mgr.EnsureReady(context.Background(), *model)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to ensure model %s is ready: %v\n", *model, err)
@@ -95,10 +128,6 @@ func main() {
 
 		// Handle /model subcommands
 		if strings.HasPrefix(prompt, "/model") {
-			if mgr == nil {
-				fmt.Println("Model zoo not initialized. Start with -model flag to enable model switching.")
-				continue
-			}
 			args := strings.TrimSpace(strings.TrimPrefix(prompt, "/model"))
 			args = strings.TrimSpace(args)
 			switch args {
